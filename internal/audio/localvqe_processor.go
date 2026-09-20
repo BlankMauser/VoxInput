@@ -12,6 +12,10 @@ type LocalVQEEngine interface {
 	HopLength() int
 }
 
+// aecRefBypassRMS is the far-end RMS below which a hop is treated as
+// "no playback". LocalVQE otherwise wipes quiet near-end speech.
+const aecRefBypassRMS = 40
+
 // localvqeProcessor streams audio through LocalVQE one hop at a time,
 // operating entirely on preallocated scratch buffers after construction.
 // LocalVQE operates at its native SampleRate (typically 16 kHz); device
@@ -120,7 +124,11 @@ func (p *localvqeProcessor) Process(rec, play, out []byte) int {
 
 	outModelLen := 0
 	for p.micBufLen >= p.hopLength && p.refBufLen >= p.hopLength {
-		if err := p.engine.ProcessFrameS16Into(
+		// No far-end energy: AEC has nothing to cancel and some LocalVQE
+		// variants zero the near-end. Pass the mic through until TTS plays.
+		if rmsS16Samples(p.refBuf[:p.hopLength]) < aecRefBypassRMS {
+			copy(p.frameOut, p.micBuf[:p.hopLength])
+		} else if err := p.engine.ProcessFrameS16Into(
 			p.micBuf[:p.hopLength],
 			p.refBuf[:p.hopLength],
 			p.frameOut,

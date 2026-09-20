@@ -166,6 +166,7 @@ type Listener struct {
 	aecMicRing       *audio.Int16Ring
 	aecRefRing       *audio.Int16Ring
 	aecDumpProcessed io.Writer
+	responseDone     chan struct{}
 }
 
 func NewListener(config ListenConfig, streamConfig audio.StreamConfig, rtCli *openairt.Client, statePath string, processor audio.AudioProcessor) *Listener {
@@ -180,6 +181,7 @@ func NewListener(config ListenConfig, streamConfig audio.StreamConfig, rtCli *op
 		errCh:        make(chan error, 1),
 		audioChunks:  make(chan *bytes.Buffer, 1024),
 		processor:    processor,
+		responseDone: make(chan struct{}),
 	}
 	l.chunkWriter = audio.NewChunkWriter(l.ctx, l.audioChunks)
 	l.audioPlayChunks = make(chan *bytes.Buffer, 1024)
@@ -357,9 +359,35 @@ func (l *Listener) SendChunks() {
 	}
 }
 
+func (l *Listener) markResponseDone() {
+	select {
+	case <-l.responseDone:
+	default:
+		close(l.responseDone)
+	}
+}
+
 func (l *Listener) Stop() {
 	log.Println("Listener.Stop: finished transcribing")
 	l.chunkWriter.Flush()
+	if l.config.Mode == "assistant" && l.conn != nil {
+		// Last flushed chunk is still on the send goroutine.
+		time.Sleep(80 * time.Millisecond)
+		if err := l.conn.SendMessage(l.ctx, openairt.InputAudioBufferCommitEvent{}); err != nil {
+			log.Println("Listener.Stop: commit: ", err)
+		} else if err := l.conn.SendMessage(l.ctx, openairt.ResponseCreateEvent{}); err != nil {
+			log.Println("Listener.Stop: response.create: ", err)
+		} else {
+			log.Println("Listener.Stop: waiting for assistant audio")
+			select {
+			case <-l.responseDone:
+				log.Println("Listener.Stop: assistant response finished")
+			case <-time.After(2 * time.Minute):
+				log.Println("Listener.Stop: timed out waiting for assistant response")
+			case <-l.ctx.Done():
+			}
+		}
+	}
 	l.conn.Close()
 	l.cancel()
 	if l.duplexOpts != nil {
