@@ -142,26 +142,30 @@ func TestProcess_TotalSampleConservation(t *testing.T) {
 func TestProcess_NonZeroInputProducesNonZeroOutput(t *testing.T) {
 	p, e := newMockProcessor(16000)
 
-	// First hop: warmup, engine returns zeros
 	sine := makeSineS16(256, 1000, 16000)
 	ref := make([]int16, 256)
 	got := runProcess(p, s16ToBytes(sine), s16ToBytes(ref))
 	if got == nil {
 		t.Fatal("expected output on first hop")
 	}
-	if e.callCount != 1 {
-		t.Fatalf("expected 1 engine call, got %d", e.callCount)
+	if e.callCount != 0 {
+		t.Fatalf("silent ref should bypass the engine, got %d calls", e.callCount)
 	}
+	if rmsS16Samples(bytesToS16(got)) == 0 {
+		t.Error("expected near-end speech to pass through when playback is silent")
+	}
+}
 
-	// Second hop: engine returns mic passthrough
-	got = runProcess(p, s16ToBytes(sine), s16ToBytes(ref))
+func TestProcess_RunsEngineWhenRefPresent(t *testing.T) {
+	p, e := newMockProcessor(16000)
+	sine := makeSineS16(256, 1000, 16000)
+	ref := makeSineS16(256, 400, 16000)
+	got := runProcess(p, s16ToBytes(sine), s16ToBytes(ref))
 	if got == nil {
-		t.Fatal("expected output on second hop")
+		t.Fatal("expected output")
 	}
-	outSamples := bytesToS16(got)
-	rms := rmsS16Samples(outSamples)
-	if rms == 0 {
-		t.Error("expected non-zero RMS output after warmup")
+	if e.callCount != 1 {
+		t.Fatalf("expected engine call with far-end energy, got %d", e.callCount)
 	}
 }
 

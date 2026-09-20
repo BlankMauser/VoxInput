@@ -183,6 +183,7 @@ func (l *Listener) ReceiveAssistantMessages() {
 			log.Println("Listener.ReceiveAssistantMessages: response done")
 			responseActive = false
 			activeResponseID = ""
+			l.markResponseDone()
 		case openairt.ServerEventTypeConversationItemInputAudioTranscriptionCompleted:
 			transcript := msg.(openairt.ConversationItemInputAudioTranscriptionCompletedEvent).Transcript
 			log.Printf("Listener.ReceiveAssistantMessages: user said: %s", transcript)
