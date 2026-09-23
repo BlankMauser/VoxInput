@@ -1,0 +1,70 @@
+internal/ipc/ipc.go
+  s_427cb635b78c18::t_0db3e5171949a6 16-17
+  s_427cb635b78c18::t_9651b32fc68ffa 15,18-22
+listen.go
+  s_427cb635b78c18::t_0ce79670d2fa49 208,279
+  s_427cb635b78c18::t_37017a81918c92 424-431,433-435,456-462,464-476
+  s_427cb635b78c18::t_a97c88d6f9d4df 554-558
+  s_427cb635b78c18::t_72cf6fc99abb3a 154-158,175,182-197,376-390,392-394,617
+  s_e668f44246047a::t_0d7e4ad18541fa 454-455,463
+  s_427cb635b78c18::t_9d0daa652e58c1 180,338,347,352-364,368-369,371-375,395-410
+internal/audio/audio.go
+  s_427cb635b78c18::t_a6d49ed6dcfb3f 573-582,594-596,598-600,602-606,608-610,612-615,617-623
+  s_427cb635b78c18::t_5bbb1a12a50138 26
+internal/audio/chunk.go
+  s_427cb635b78c18::t_3b4370cb493baa 69-77,119-126,131-134,141-142,175
+internal/audio/capture_aec.go
+  s_427cb635b78c18::t_0bc0ad99fc1132 1-74
+assistant.go
+  s_427cb635b78c18::t_2850150f6cd5cc 51,78,81,84,216,235,248-251,260-261,269,272,327-333,335-338,340
+  s_427cb635b78c18::t_0d6d6a12c957ed 21,27-50,52-77,79-80,82-83,85-93,153
+assistant_test.go
+  s_427cb635b78c18::t_9ecda92deaca82 1-72
+internal/audio/capture_aec_test.go
+  s_427cb635b78c18::t_4896fe8b15190b 1-50
+internal/audio/ringbuf.go
+  s_427cb635b78c18::t_78c7e73d239737 83-98
+main.go
+  s_427cb635b78c18::t_b934d846392bc6 53-55,93,97
+transcription_state.go
+  s_427cb635b78c18::t_4fbc21fa1d2929 76,80
+  s_427cb635b78c18::t_fbed04334665e4 1-36,40-47,53-75,77-79,81-94
+  s_427cb635b78c18::t_61bbc6aaed7868 37-39,48-52
+README.md
+  s_427cb635b78c18::t_14e495693e99fb 104,128-130
+  s_427cb635b78c18::t_b40e1913cb7e6e 21,98
+transcription.go
+  s_427cb635b78c18::t_3bac0c61b3a883 9
+  s_427cb635b78c18::t_36b0412d9de67e 17-18,20-23,33,35,49
+  s_427cb635b78c18::t_ee1783c1ed5c83 86,108-113,115-122,124-128,134-135,139-142,146,150-151,153-180,182-183
+  s_427cb635b78c18::t_087c67b3f40599 14,53-62,91-96,100-105
+  s_e668f44246047a::t_df3bcc1ecd1a13 152
+transcription_state_test.go
+  s_427cb635b78c18::t_26b2789b473659 1-5,7-57,78
+  s_427cb635b78c18::t_849dd3cae5831d 6
+  s_427cb635b78c18::t_62f887e87410ea 58-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7e4d6be962bdabd3407c0485f1f010d1b4e0d6ac",
+  "prompts": {},
+  "sessions": {
+    "s_427cb635b78c18": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cd0a-4940-7d82-b026-829588a28f8a",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "BlankMauser <thomasluvan@gmail.com>"
+    },
+    "s_e668f44246047a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cc49-6045-7853-bcd2-d86a47e183df",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "BlankMauser <thomasluvan@gmail.com>"
+    }
+  }
+}
