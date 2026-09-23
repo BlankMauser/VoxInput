@@ -151,6 +151,11 @@ type ListenConfig struct {
 type Listener struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
+	captureCtx       context.Context
+	captureCancel    context.CancelFunc
+	audioDone        chan struct{}
+	sendBarrier      chan chan struct{}
+	sendDone         chan struct{}
 	conn             *openairt.Conn
 	errCh            chan error
 	audioChunks      chan *bytes.Buffer
@@ -167,21 +172,29 @@ type Listener struct {
 	aecRefRing       *audio.Int16Ring
 	aecDumpProcessed io.Writer
 	responseDone     chan struct{}
+	transcription    *transcriptionState
 }
 
 func NewListener(config ListenConfig, streamConfig audio.StreamConfig, rtCli *openairt.Client, statePath string, processor audio.AudioProcessor) *Listener {
 	ctx, cancel := context.WithCancel(context.Background())
+	captureCtx, captureCancel := context.WithCancel(ctx)
 	l := &Listener{
-		ctx:          ctx,
-		cancel:       cancel,
-		config:       config,
-		streamConfig: streamConfig,
-		rtCli:        rtCli,
-		statePath:    statePath,
-		errCh:        make(chan error, 1),
-		audioChunks:  make(chan *bytes.Buffer, 1024),
-		processor:    processor,
-		responseDone: make(chan struct{}),
+		ctx:           ctx,
+		cancel:        cancel,
+		captureCtx:    captureCtx,
+		captureCancel: captureCancel,
+		audioDone:     make(chan struct{}),
+		sendBarrier:   make(chan chan struct{}),
+		sendDone:      make(chan struct{}),
+		config:        config,
+		streamConfig:  streamConfig,
+		rtCli:         rtCli,
+		statePath:     statePath,
+		errCh:         make(chan error, 1),
+		audioChunks:   make(chan *bytes.Buffer, 1024),
+		processor:     processor,
+		responseDone:  make(chan struct{}),
+		transcription: newTranscriptionState(),
 	}
 	l.chunkWriter = audio.NewChunkWriter(l.ctx, l.audioChunks)
 	l.audioPlayChunks = make(chan *bytes.Buffer, 1024)
@@ -192,7 +205,7 @@ func NewListener(config ListenConfig, streamConfig audio.StreamConfig, rtCli *op
 	prerollBytes := playbackRate * playbackJitterMs / 1000 * 2
 	l.playReader = audio.NewChunkReader(l.ctx, l.audioPlayChunks, prerollBytes)
 
-	monitorMode := config.RefRing != nil && config.AECRefSource == AECRefMonitor
+	monitorMode := config.Mode == "assistant" && config.RefRing != nil && config.AECRefSource == AECRefMonitor
 
 	if config.DumpAudioDir != "" && config.Mode == "assistant" {
 		if err := os.MkdirAll(config.DumpAudioDir, 0o755); err != nil {
@@ -263,7 +276,7 @@ func NewListener(config ListenConfig, streamConfig audio.StreamConfig, rtCli *op
 
 	// When a processor is configured, route AEC work through a dedicated
 	// worker goroutine so inference never blocks the realtime audio callback.
-	if processor != nil {
+	if processor != nil && config.Mode == "assistant" {
 		l.aecMicRing = audio.NewInt16Ring(streamConfig.SampleRate) // ~1s buffer
 		l.aecRefRing = audio.NewInt16Ring(streamConfig.SampleRate)
 		if l.duplexOpts == nil {
@@ -322,6 +335,7 @@ func (l *Listener) Start() error {
 }
 
 func (l *Listener) RunAudio() {
+	defer close(l.audioDone)
 	if l.config.Mode == "assistant" {
 		l.runAudioAssistant()
 	} else {
@@ -330,32 +344,70 @@ func (l *Listener) RunAudio() {
 }
 
 func (l *Listener) SendChunks() {
+	defer close(l.sendDone)
 	for {
 		var cur *bytes.Buffer
 		select {
 		case cur = <-l.audioChunks:
+		case barrier := <-l.sendBarrier:
+			for {
+				select {
+				case cur = <-l.audioChunks:
+					if !l.sendChunk(cur) {
+						close(barrier)
+						return
+					}
+				default:
+					close(barrier)
+					goto next
+				}
+			}
 		case <-l.ctx.Done():
 			return
 		}
-		log.Printf("Listener.SendChunks: transcribing, %d\n", cur.Len())
-		if cur.Len() < 1 {
-			continue
+		if !l.sendChunk(cur) {
+			return
 		}
-		if err := l.conn.SendMessage(l.ctx, openairt.InputAudioBufferAppendEvent{
-			EventBase: openairt.EventBase{
-				EventID: "TODO",
-			},
-			Audio: base64.StdEncoding.EncodeToString(cur.Bytes()),
-		}); err != nil {
-			var permanent *openairt.PermanentError
-			if errors.As(err, &permanent) {
-				l.errCh <- fmt.Errorf("Listener.SendChunks: connection failed: %w", err)
-				l.cancel()
-				return
-			}
-			log.Println("Listener.SendChunks: error sending message: ", err)
-			continue
+	next:
+	}
+}
+
+func (l *Listener) sendChunk(cur *bytes.Buffer) bool {
+	log.Printf("Listener.SendChunks: transcribing, %d\n", cur.Len())
+	if cur.Len() < 1 {
+		return true
+	}
+	if err := l.conn.SendMessage(l.ctx, openairt.InputAudioBufferAppendEvent{
+		EventBase: openairt.EventBase{
+			EventID: "TODO",
+		},
+		Audio: base64.StdEncoding.EncodeToString(cur.Bytes()),
+	}); err != nil {
+		var permanent *openairt.PermanentError
+		if errors.As(err, &permanent) {
+			l.errCh <- fmt.Errorf("Listener.SendChunks: connection failed: %w", err)
+			l.cancel()
+			return false
 		}
+		log.Println("Listener.SendChunks: error sending message: ", err)
+		return true
+	}
+	return true
+}
+
+func (l *Listener) drainSentAudio() {
+	barrier := make(chan struct{})
+	select {
+	case l.sendBarrier <- barrier:
+	case <-l.sendDone:
+		return
+	case <-l.ctx.Done():
+		return
+	}
+	select {
+	case <-barrier:
+	case <-l.sendDone:
+	case <-l.ctx.Done():
 	}
 }
 
@@ -369,7 +421,18 @@ func (l *Listener) markResponseDone() {
 
 func (l *Listener) Stop() {
 	log.Println("Listener.Stop: finished transcribing")
+	if l.config.Mode == "transcription" {
+		l.captureCancel()
+		select {
+		case <-l.audioDone:
+		case <-time.After(5 * time.Second):
+			log.Println("Listener.Stop: timed out stopping audio capture")
+		}
+	}
 	l.chunkWriter.Flush()
+	if l.config.Mode == "transcription" {
+		l.drainSentAudio()
+	}
 	if l.config.Mode == "assistant" && l.conn != nil {
 		// Last flushed chunk is still on the send goroutine.
 		time.Sleep(80 * time.Millisecond)
@@ -387,6 +450,29 @@ func (l *Listener) Stop() {
 			case <-l.ctx.Done():
 			}
 		}
+	}
+	if l.config.Mode == "transcription" && l.conn != nil {
+		// The user may release push-to-talk before server VAD has seen silence.
+		// Commit the final segment. A session update sent after it is processed
+		// in WebSocket order and acknowledges that all item IDs are known.
+		commitsBefore, updatesBefore := l.transcription.snapshot()
+		commitSent := true
+		if err := l.conn.SendMessage(l.ctx, openairt.InputAudioBufferCommitEvent{
+			EventBase: openairt.EventBase{EventID: stopTranscriptionCommitEventID},
+		}); err != nil {
+			log.Println("Listener.Stop: transcription commit: ", err)
+			commitSent = false
+		}
+		barrierSent := true
+		if err := l.conn.SendMessage(l.ctx, l.transcriptionSessionUpdate("Stop transcription barrier")); err != nil {
+			log.Println("Listener.Stop: transcription barrier: ", err)
+			barrierSent = false
+		}
+		waitCtx, cancelWait := context.WithTimeout(l.ctx, 15*time.Second)
+		if err := l.transcription.wait(waitCtx, commitsBefore, updatesBefore, commitSent, barrierSent); err != nil {
+			log.Println("Listener.Stop: waiting for transcription: ", err)
+		}
+		cancelWait()
 	}
 	l.conn.Close()
 	l.cancel()
@@ -465,7 +551,11 @@ func listen(config ListenConfig) {
 	maxProcessBytes := 2 * periodMs * sampleRate / 1000 * 2
 
 	var processor audio.AudioProcessor
-	if config.EnableAEC && config.Mode == "assistant" {
+	// Transcription has no VoxInput playback stream. A system monitor is its
+	// only usable AEC reference while another app (such as Companion) speaks.
+	useAEC := config.EnableAEC && (config.Mode == "assistant" ||
+		config.Mode == "transcription" && config.AECRefSource == AECRefMonitor)
+	if useAEC {
 		modelPath, err := localvqe.EnsureModel(config.LocalVQEModelPath, config.LocalVQEModelVersion)
 		if err != nil {
 			log.Fatalf("listen: failed to ensure localvqe model: %v", err)
@@ -524,7 +614,7 @@ func listen(config ListenConfig) {
 		go func() {
 			if err := audio.CaptureToRing(monitorCtx, config.RefRing, monitorConfig); err != nil &&
 				!errors.Is(err, context.Canceled) {
-				log.Printf("listen: monitor capture ended: %v", err)
+				log.Fatalf("listen: monitor capture ended: %v", err)
 			}
 		}()
 		log.Printf("listen: AEC monitor capture started (device=%q, rate=%d)", config.AECMonitorDevice, sampleRate)

@@ -66,6 +66,15 @@ type ChunkReader struct {
 	pendingBytes int
 	prerollBytes int
 	buffering    bool
+	playedBytes  int64
+	droppedBytes int64
+}
+
+// PlaybackProgress counts PCM bytes submitted to the output callback and
+// discarded by Flush. Both counters are monotonic for the life of the reader.
+type PlaybackProgress struct {
+	PlayedBytes  int64
+	DroppedBytes int64
 }
 
 // NewChunkReader returns a reader over chunks. prerollBytes sets the playout
@@ -107,17 +116,30 @@ func (r *ChunkReader) drainAvailable() {
 // after the response is "done" server-side. Safe to call concurrently with
 // Read.
 func (r *ChunkReader) Flush() int {
+	dropped, _ := r.FlushWithProgress()
+	return dropped
+}
+
+// FlushWithProgress atomically captures the playback boundary before dropping
+// queued audio. A caller can use the boundary to truncate an interrupted
+// server-side audio item at the amount actually submitted to the speaker.
+func (r *ChunkReader) FlushWithProgress() (int, PlaybackProgress) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.drainAvailable()
+	progress := PlaybackProgress{
+		PlayedBytes:  r.playedBytes,
+		DroppedBytes: r.droppedBytes,
+	}
 	// pendingBytes already accounts for the unread tail of r.current.
 	dropped := r.pendingBytes
 	r.current = nil
 	r.pending = nil
 	r.pendingBytes = 0
 	r.buffering = true
-	return dropped
+	r.droppedBytes += int64(dropped)
+	return dropped, progress
 }
 
 func (r *ChunkReader) Read(p []byte) (int, error) {
@@ -150,6 +172,7 @@ func (r *ChunkReader) Read(p []byte) (int, error) {
 
 		nn, _ := r.current.Read(p)
 		n += nn
+		r.playedBytes += int64(nn)
 		p = p[nn:]
 		r.pendingBytes -= nn
 		if r.current.Len() == 0 {

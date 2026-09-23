@@ -18,7 +18,7 @@ VoxInput is meant to be used with [LocalAI](https://localai.io), but it will fun
 - **Text Automation**: Simulates typing the transcribed text into an application using [`dotool`](https://git.sr.ht/~geb/dotool) on Linux or CoreGraphics on macOS.
 - **Voice Activity Detection**: In realtime mode VoxInput uses VAD to detect speech segments and automatically transcribe them.
 - **Noise Suppression**: Reduces background noise from the microphone input to improve transcription accuracy.
-- **Acoustic Echo Cancellation**: In assistant mode, cancels the assistant's own voice output from the microphone input to prevent feedback loops.
+- **Acoustic Echo Cancellation**: Cancels far-end audio from the microphone in assistant mode, or from a loopback monitor in transcription mode while another app speaks.
 - **Visual Notification**: In realtime mode, a GUI notification informs you when recording (VAD) has started or stopped.
 - **Assistant Mode**: Voice conversations with an LLM using the OpenAI Realtime API with bidirectional audio streaming, automatic speech detection, and voice responses. Supports barge-in: speak over the assistant to interrupt it mid-response.
 - **Desktop Control**: In assistant mode, the LLM can execute keyboard and mouse commands through function calls to control your desktop environment.
@@ -95,12 +95,13 @@ Unless you don't mind running VoxInput as root, then you also need to ensure the
 - `VOXINPUT_MODE`: Realtime mode (transcription|assistant, default: transcription).
 - `VOXINPUT_INPUT_SAMPLE_RATE`: Sample rate for audio input in Hz (default: 24000). Used for capturing audio and for realtime API input.
 - `VOXINPUT_OUTPUT_SAMPLE_RATE`: Sample rate for audio output in Hz (default: 24000). Used for realtime API output and audio playback.
+- `VOXINPUT_ENABLE_AEC`: Enable AEC in assistant mode and in transcription mode with a monitor reference (`yes`/`no`, default: `yes`).
 - `VOXINPUT_AEC_FILTER_MS`: AEC filter length in milliseconds (default: 200).
 - `VOXINPUT_AEC_DELAY_MS`: AEC reference delay in milliseconds to compensate for acoustic path delay between speaker and mic (default: 50). Use the dump+shift analysis test to find the optimal value for your setup.
 - `VOXINPUT_LOCALVQE_MODEL`: Path to a LocalVQE GGUF model file, overriding the bundled models (default: the bundled model selected by `VOXINPUT_LOCALVQE_MODEL_VERSION`).
 - `VOXINPUT_LOCALVQE_MODEL_VERSION`: Which bundled LocalVQE model to use: `v1.2` (default), `v1.3`, or the compact low-power line `pi-v1` (AEC + noise suppression + dereverb) and `pi-aec-v1` (echo cancellation only, keeps noise). The Pi models are ~49K-parameter GTCRN-AEC networks that run ~21x realtime on a single Raspberry Pi 5 core, for hardware where even `v1.2` is too heavy. The full `version-size` form (`v1.2-1.3M`, `v1.3-4.8M`, `pi-v1-49k`, `pi-aec-v1-49k`) is also accepted. The CMake build bundles all models under `share/voxinput`; with a plain `go build` the chosen model is downloaded from HuggingFace on first use, verified against a known checksum, and cached under the user cache directory (e.g. `~/.cache/voxinput`). Ignored when `VOXINPUT_LOCALVQE_MODEL` is set.
 - `VOXINPUT_LOCALVQE_LIB`: Path to `liblocalvqe.so` / `liblocalvqe.dylib` (default: next to the binary or the system library path).
-- `VOXINPUT_AEC_REF_SOURCE`: AEC reference signal source — `playback` (far-end TTS buffer we send to the speaker, default) or `monitor` (samples captured from a loopback device so AEC can also cancel system audio from other apps). Also settable via `--aec-ref-source`.
+- `VOXINPUT_AEC_REF_SOURCE`: AEC reference signal source — `playback` (far-end TTS buffer we send to the speaker, default) or `monitor` (samples captured from a loopback device so AEC can also cancel system audio from other apps). Transcription mode uses AEC when this is `monitor` and `VOXINPUT_ENABLE_AEC` is enabled. Also settable via `--aec-ref-source`.
 - `VOXINPUT_AEC_MONITOR_DEVICE`: Name of the capture device that feeds the AEC reference when `AEC_REF_SOURCE=monitor`. On PipeWire/PulseAudio this is usually `"Monitor of <sink>"`; on macOS this requires a virtual loopback such as [BlackHole](https://github.com/ExistentialAudio/BlackHole) or Loopback routing system output to a capture device. Use the `devices` subcommand to list capture devices. Also settable via `--aec-monitor-device`.
 - `VOXINPUT_AEC_NOISE_GATE`: Enable the LocalVQE residual-echo noise gate (`yes`/`no`, default: `no`). When on, any output hop whose RMS sits at or below `VOXINPUT_AEC_NOISE_GATE_DBFS` is replaced with silence. Useful when the model leaves a faint residual on far-end-only / silent-near-end stretches that becomes audible after downstream peak-normalisation. Also settable via `--aec-noise-gate` / `--no-aec-noise-gate`.
 - `VOXINPUT_AEC_NOISE_GATE_DBFS`: Noise gate threshold in dBFS (default: `-45.0`). More negative gates fewer frames (preserves quiet near-end speech, leaves more residual); less negative gates more aggressively. Also settable via `--aec-noise-gate-dbfs`.
@@ -124,6 +125,9 @@ Unless you don't mind running VoxInput as root, then you also need to ensure the
   - `--screenshot-command <cmd>`: (assistant mode only) Command to capture a screenshot (e.g. `grim /tmp/screenshot.png`)
   - `--screenshot-file <path>`: (assistant mode only) Path where the screenshot command saves its output
   - `--dump-audio <dir>`: (assistant mode only) Dump raw mic and speaker PCM to files for AEC analysis
+  - `--no-aec`: Disable AEC in assistant mode or transcription with a monitor reference
+  - `--aec-ref-source <playback|monitor>`: Select the AEC reference source; transcription AEC requires `monitor`
+  - `--aec-monitor-device <name>`: Select the loopback capture device for the monitor reference
   - `--aec-noise-gate` / `--no-aec-noise-gate`: (assistant mode only) Toggle the LocalVQE residual-echo noise gate
   - `--aec-noise-gate-dbfs <float>`: (assistant mode only) Noise gate threshold in dBFS (default: -45.0)
   - `--socket <path>`: Enable IPC socket server for TUI connections

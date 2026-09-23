@@ -80,6 +80,22 @@ func (r *Int16Ring) Len() int {
 	return r.size
 }
 
+// TrimTo discards the oldest samples until at most keep remain. This bounds
+// latency when independent capture devices drift or the consumer starts late.
+func (r *Int16Ring) TrimTo(keep int) {
+	if keep < 0 {
+		keep = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.size <= keep {
+		return
+	}
+	drop := r.size - keep
+	r.head = (r.head + drop) % r.cap
+	r.size = keep
+}
+
 func (r *Int16Ring) Cap() int {
 	return r.cap
 }

@@ -15,14 +15,81 @@ import (
 	"strings"
 
 	openairt "github.com/WqyJh/go-openai-realtime/v2"
-	"github.com/sashabaranov/go-openai/jsonschema"
 	"github.com/richiejp/VoxInput/internal/audio"
 	"github.com/richiejp/VoxInput/internal/gui"
 	"github.com/richiejp/VoxInput/internal/input"
+	"github.com/sashabaranov/go-openai/jsonschema"
 )
 
 const functionNameInputControl = "input_control"
 const functionNameTakeScreenshot = "take_screenshot"
+
+type assistantAudioSpan struct {
+	start int64
+	end   int64
+}
+
+type assistantAudioPart struct {
+	responseID   string
+	itemID       string
+	contentIndex int
+	generated    int64
+	spans        []assistantAudioSpan
+}
+
+type assistantAudioLedger struct {
+	queued int64
+	parts  []assistantAudioPart
+}
+
+func (a *assistantAudioLedger) noteDelta(delta openairt.ResponseOutputAudioDeltaEvent, size int) int {
+	for i := range a.parts {
+		part := &a.parts[i]
+		if part.itemID == delta.ItemID && part.contentIndex == delta.ContentIndex {
+			part.generated += int64(size)
+			return i
+		}
+	}
+	a.parts = append(a.parts, assistantAudioPart{
+		responseID:   delta.ResponseID,
+		itemID:       delta.ItemID,
+		contentIndex: delta.ContentIndex,
+		generated:    int64(size),
+	})
+	return len(a.parts) - 1
+}
+
+func (a *assistantAudioLedger) noteQueued(partIndex int, size int) {
+	a.parts[partIndex].spans = append(a.parts[partIndex].spans, assistantAudioSpan{
+		start: a.queued,
+		end:   a.queued + int64(size),
+	})
+	a.queued += int64(size)
+}
+
+func (a *assistantAudioLedger) truncations(progress audio.PlaybackProgress, activeResponseID string, sampleRate int) []openairt.ConversationItemTruncateEvent {
+	boundary := progress.PlayedBytes + progress.DroppedBytes
+	var events []openairt.ConversationItemTruncateEvent
+	for _, part := range a.parts {
+		var played int64
+		for _, span := range part.spans {
+			if boundary <= span.start {
+				continue
+			}
+			end := min(boundary, span.end)
+			played += end - span.start
+		}
+		if played >= part.generated && part.responseID != activeResponseID {
+			continue
+		}
+		events = append(events, openairt.ConversationItemTruncateEvent{
+			ItemID:       part.itemID,
+			ContentIndex: part.contentIndex,
+			AudioEndMs:   int(played * 1000 / int64(sampleRate*2)),
+		})
+	}
+	return events
+}
 
 func (l *Listener) startAssistantSession(ctx context.Context) error {
 	voice := openairt.Voice("")
@@ -83,7 +150,7 @@ func (l *Listener) startAssistantSession(ctx context.Context) error {
 		},
 		Session: openairt.SessionUnion{
 			Realtime: &openairt.RealtimeSession{
-				Instructions:     l.config.Instructions,
+				Instructions: l.config.Instructions,
 				Audio: &openairt.RealtimeSessionAudio{
 					Input: &openairt.SessionAudioInput{
 						Format: &openairt.AudioFormatUnion{
@@ -146,6 +213,7 @@ func (l *Listener) ReceiveAssistantMessages() {
 	// touched solely from this goroutine, so no synchronisation is needed.
 	var responseActive bool
 	var activeResponseID string
+	var audioLedger assistantAudioLedger
 
 	for {
 		msg, err := l.conn.ReadMessage(l.ctx)
@@ -164,11 +232,7 @@ func (l *Listener) ReceiveAssistantMessages() {
 		case openairt.ServerEventTypeInputAudioBufferSpeechStarted:
 			log.Println("Listener.ReceiveAssistantMessages: speech detected")
 			l.config.UI.Send(&gui.ShowSpeechDetectedMsg{})
-			// Barge-in: the user is talking over the assistant. The local
-			// playback buffer can hold seconds of TTS that arrived in a burst,
-			// so always flush it here regardless of server response state. Only
-			// send response.cancel when the server is still streaming.
-			l.bargeIn(responseActive, activeResponseID)
+			l.bargeIn(&audioLedger, activeResponseID)
 			responseActive = false
 			activeResponseID = ""
 		case openairt.ServerEventTypeInputAudioBufferSpeechStopped:
@@ -181,8 +245,10 @@ func (l *Listener) ReceiveAssistantMessages() {
 			l.config.UI.Send(&gui.ShowGeneratingResponseMsg{})
 		case openairt.ServerEventTypeResponseDone:
 			log.Println("Listener.ReceiveAssistantMessages: response done")
-			responseActive = false
-			activeResponseID = ""
+			if msg.(openairt.ResponseDoneEvent).Response.ID == activeResponseID {
+				responseActive = false
+				activeResponseID = ""
+			}
 			l.markResponseDone()
 		case openairt.ServerEventTypeConversationItemInputAudioTranscriptionCompleted:
 			transcript := msg.(openairt.ConversationItemInputAudioTranscriptionCompletedEvent).Transcript
@@ -191,17 +257,19 @@ func (l *Listener) ReceiveAssistantMessages() {
 		case openairt.ServerEventTypeResponseOutputAudioDelta:
 			// Drop deltas once the response has been barged in on; they would
 			// otherwise refill the playback buffer we just flushed.
-			if !responseActive {
+			delta := msg.(openairt.ResponseOutputAudioDeltaEvent)
+			if !responseActive || delta.ResponseID != activeResponseID {
 				continue
 			}
-			delta := msg.(openairt.ResponseOutputAudioDeltaEvent)
 			b, err := base64.StdEncoding.DecodeString(delta.Delta)
 			if err != nil {
 				log.Println("Listener.ReceiveAssistantMessages: error decoding audio delta: ", err)
 				continue
 			}
+			partIndex := audioLedger.noteDelta(delta, len(b))
 			select {
 			case l.audioPlayChunks <- bytes.NewBuffer(b):
+				audioLedger.noteQueued(partIndex, len(b))
 			default:
 				log.Println("Listener.ReceiveAssistantMessages: dropped audio chunk")
 			}
@@ -256,27 +324,20 @@ func (l *Listener) ReceiveAssistantMessages() {
 	}
 }
 
-// bargeIn aborts the assistant when the user starts speaking. It always
-// flushes the locally queued TTS so the speaker goes quiet immediately; the
-// buffer routinely outlives the server response because audio arrives in a
-// burst. When the server is still streaming (responseActive), it also sends
-// response.cancel so no further audio is generated.
-func (l *Listener) bargeIn(responseActive bool, responseID string) {
-	dropped := l.playReader.Flush()
-	if dropped == 0 && !responseActive {
-		return
+// Server VAD cancels generation on speech_started. WebSocket playback belongs
+// to the client, so it must also discard queued samples and truncate unheard
+// audio in the server conversation.
+func (l *Listener) bargeIn(ledger *assistantAudioLedger, activeResponseID string) {
+	dropped, progress := l.playReader.FlushWithProgress()
+	if dropped > 0 {
+		log.Printf("Listener.bargeIn: user interrupted, dropped %d bytes of queued audio", dropped)
 	}
-	log.Printf("Listener.bargeIn: user interrupted, dropped %d bytes of queued audio", dropped)
-
-	if !responseActive {
-		return
+	for _, event := range ledger.truncations(progress, activeResponseID, l.config.OutputSampleRate) {
+		if err := l.conn.SendMessage(l.ctx, event); err != nil {
+			log.Printf("Listener.bargeIn: truncate item %s: %v", event.ItemID, err)
+		}
 	}
-
-	if err := l.conn.SendMessage(l.ctx, openairt.ResponseCancelEvent{
-		ResponseID: responseID,
-	}); err != nil {
-		log.Println("Listener.bargeIn: error cancelling response: ", err)
-	}
+	ledger.parts = nil
 }
 
 func (l *Listener) takeScreenshot(callID string, reason string) error {
@@ -343,4 +404,3 @@ func (l *Listener) takeScreenshot(callID string, reason string) error {
 	log.Println("Listener.takeScreenshot: screenshot sent to conversation")
 	return nil
 }
-

@@ -23,7 +23,7 @@ type StreamConfig struct {
 	InputSampleRate  int
 	OutputSampleRate int
 	PeriodMs         int
-	MalgoContext      malgo.Context
+	MalgoContext     malgo.Context
 	CaptureDeviceID  *malgo.DeviceID
 }
 
@@ -570,6 +570,16 @@ func (w *AECWorker) run() {
 	for {
 		select {
 		case <-w.ctx.Done():
+			w.drain()
+			// A capture stop can leave less than one 20 ms batch. Pad only
+			// that final batch so the transcription server receives the tail.
+			if n := min(w.micRing.Len(), w.refRing.Len()); n > 0 {
+				clear(w.micInt16)
+				clear(w.refInt16)
+				w.micRing.Read(w.micInt16[:min(n, w.batchSamples)])
+				w.refRing.Read(w.refInt16[:min(n, w.batchSamples)])
+				w.processBatch()
+			}
 			return
 		case <-tick.C:
 			w.drain()
@@ -581,33 +591,36 @@ func (w *AECWorker) drain() {
 	for w.micRing.Len() >= w.batchSamples && w.refRing.Len() >= w.batchSamples {
 		w.micRing.Read(w.micInt16)
 		w.refRing.Read(w.refInt16)
-		s16ToBytesInto(w.micBytes, w.micInt16)
-		s16ToBytesInto(w.refBytes, w.refInt16)
+		w.processBatch()
+	}
+}
 
-		n := w.processor.Process(w.micBytes, w.refBytes, w.cleanedBuf)
-		if n == 0 {
-			continue
-		}
-		cleaned := w.cleanedBuf[:n]
+func (w *AECWorker) processBatch() {
+	s16ToBytesInto(w.micBytes, w.micInt16)
+	s16ToBytesInto(w.refBytes, w.refInt16)
 
-		if w.opts != nil && w.opts.DumpProcessed != nil {
-			w.opts.DumpProcessed.Write(cleaned)
-		}
+	n := w.processor.Process(w.micBytes, w.refBytes, w.cleanedBuf)
+	if n == 0 {
+		return
+	}
+	cleaned := w.cleanedBuf[:n]
 
-		if w.outputRate != 0 && w.outputRate != w.deviceRate {
-			need := n*w.outputRate/w.deviceRate + 2
-			if need > cap(w.resampleOut) {
-				w.resampleOut = make([]byte, need)
-			}
-			w.resampleOut = w.resampleOut[:cap(w.resampleOut)]
-			m := resampleS16Into(w.resampleOut, cleaned, w.deviceRate, w.outputRate)
-			cleaned = w.resampleOut[:m]
-		}
+	if w.opts != nil && w.opts.DumpProcessed != nil {
+		w.opts.DumpProcessed.Write(cleaned)
+	}
 
-		if _, err := w.out.Write(cleaned); err != nil {
-			log.Printf("AECWorker: write error: %v", err)
-			return
+	if w.outputRate != 0 && w.outputRate != w.deviceRate {
+		need := n*w.outputRate/w.deviceRate + 2
+		if need > cap(w.resampleOut) {
+			w.resampleOut = make([]byte, need)
 		}
+		w.resampleOut = w.resampleOut[:cap(w.resampleOut)]
+		m := resampleS16Into(w.resampleOut, cleaned, w.deviceRate, w.outputRate)
+		cleaned = w.resampleOut[:m]
+	}
+
+	if _, err := w.out.Write(cleaned); err != nil {
+		log.Printf("AECWorker: write error: %v", err)
 	}
 }
 

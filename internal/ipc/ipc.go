@@ -12,12 +12,14 @@ import (
 type EventKind string
 
 const (
-	EventStatus       EventKind = "status"
-	EventTranscript   EventKind = "transcript"
-	EventAssistant    EventKind = "assistant"
-	EventFunctionCall EventKind = "function_call"
-	EventLog          EventKind = "log"
-	EventError        EventKind = "error"
+	EventStatus        EventKind = "status"
+	EventSpeechStarted EventKind = "speech_started"
+	EventSpeechStopped EventKind = "speech_stopped"
+	EventTranscript    EventKind = "transcript"
+	EventAssistant     EventKind = "assistant"
+	EventFunctionCall  EventKind = "function_call"
+	EventLog           EventKind = "log"
+	EventError         EventKind = "error"
 )
 
 type Event struct {

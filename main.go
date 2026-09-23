@@ -50,7 +50,9 @@ func main() {
            --mode <transcription|assistant> (realtime only, default: transcription)
            --instructions <text> System prompt for the assistant model
            --no-dotool (assistant mode only) Disable the dotool function call
-           --no-aec (assistant mode only) Disable acoustic echo cancellation
+           --no-aec Disable acoustic echo cancellation
+           --aec-ref-source <playback|monitor> Use a playback or loopback monitor AEC reference
+           --aec-monitor-device <name> Capture device for the monitor reference
            --screenshot-command <cmd> (assistant mode only) Command to capture a screenshot (e.g. "grim /tmp/screenshot.png")
            --screenshot-file <path> (assistant mode only) Path where the screenshot command saves its output
            --dump-audio <dir> (assistant mode only) Dump raw mic and speaker PCM to files for AEC analysis
@@ -88,11 +90,11 @@ Environment variables:
   VOXINPUT_OUTPUT_FILE - File to write transcribed text to (instead of keyboard)
   VOXINPUT_PROMPT - Text used to condition the transcription model output. Could be previously transcribed text or uncommon words you expect to use (default: none)
   VOXINPUT_MODE - Realtime mode (transcription|assistant, default: transcription)
-  VOXINPUT_ENABLE_AEC - Enable acoustic echo cancellation in assistant mode (yes/no, default: yes)
+  VOXINPUT_ENABLE_AEC - Enable acoustic echo cancellation in assistant mode or transcription with a monitor reference (yes/no, default: yes)
   VOXINPUT_LOCALVQE_MODEL - Path to a LocalVQE GGUF model file, overriding the bundled models (default: the bundled model selected by VOXINPUT_LOCALVQE_MODEL_VERSION)
   VOXINPUT_LOCALVQE_MODEL_VERSION - Which bundled LocalVQE model to use: v1.2 (default), v1.3, or the compact low-power line pi-v1 (AEC+NS+dereverb) and pi-aec-v1 (echo-only); also accepts the full version-size form (v1.2-1.3M, v1.3-4.8M, pi-v1-49k, pi-aec-v1-49k). All are bundled by the CMake build; with a plain 'go build' the chosen model is downloaded into the user cache on first use. Ignored when VOXINPUT_LOCALVQE_MODEL is set.
   VOXINPUT_LOCALVQE_LIB - Path to liblocalvqe.so (default: next to the binary or system library path)
-  VOXINPUT_AEC_REF_SOURCE - AEC reference signal: 'playback' (far-end TTS buffer, default) or 'monitor' (samples from a loopback capture device)
+  VOXINPUT_AEC_REF_SOURCE - AEC reference signal: 'playback' (far-end TTS buffer, default) or 'monitor' (loopback capture; required for transcription AEC)
   VOXINPUT_AEC_MONITOR_DEVICE - Capture device name feeding the AEC reference when AEC_REF_SOURCE=monitor (e.g. "Monitor of <sink>" on PipeWire, a BlackHole/Loopback device on macOS; use 'devices' to list)
   VOXINPUT_AEC_NOISE_GATE - Enable LocalVQE residual-echo noise gate (yes/no, default: no). Mutes hops whose RMS sits at or below the threshold; useful when the model's quiet residual is audible during far-end-only stretches. Also settable via --aec-noise-gate / --no-aec-noise-gate.
   VOXINPUT_AEC_NOISE_GATE_DBFS - Noise gate threshold in dBFS (default: -45.0). Lower = gates fewer frames; higher (less negative) = gates more aggressively but may clip quiet near-end speech. Also settable via --aec-noise-gate-dbfs.
